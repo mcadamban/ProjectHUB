@@ -1,0 +1,266 @@
+---
+title: "Forecasting Future Housing Prices"
+author: 'Mayuraan Cadamban'
+date: "2023-04-18"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# Introduction 
+This project examines data about residential homes in Awes, Iowa, and creates model based off that data to predict the final price of each home using multiple linear regression. Data obtained from https://www.kaggle.com/competitions/house-prices-advanced-regression-techniques/data. 
+
+The data sets have 1460 observations with 79 explanatory variables describing aspects of residential homes in Awes, Iowa.
+
+This report will examine the data using regression analysis, which is a statistical method usd to examine the relationship of two or more variables of interest. The goal is to achieve a regression model with a prediction accuracy above 70%. 
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(corrplot)
+library(ggplot2)
+library(lubridate)
+library(gridExtra)
+library(caTools)
+library(GGally)
+library(data.table)
+library(Matrix)
+library(caret)
+library(Metrics)
+
+```
+
+# Reading the Data 
+Below, I am reading the data from Kaggle as dataframes into R. 
+```{r}
+train <- read.csv("C:/Users/mc17/Documents/house-prices-advanced-regression-techniques/train.csv")
+```
+### Viewing a Part of the Data
+```{r}
+head(train,3)
+```
+We can also see the structure and summary statistics of the data, for example the ones for the 'train' data set.
+```{r}
+str(train)
+summary(train)
+```
+Now we can check if there are any missing values in the data.
+```{r}
+NA_values=data.frame(no_of_na_values=colSums(is.na(train))) # checking for null values 
+head(NA_values,21)
+```
+As we can see there are some values missing for certain variables as can be seen above, but most variables have 0 missing data points, so there should not be a huge impact in the accuracy of predictions.
+
+# Exploratory Data Analysis on Train Data 
+## 1. Determining Association between Variables 
+We will create a correlation plot (using the function corrplot) to comprehend the association of the dependent variable (in this case price) with independent variables from the data set. 
+
+But before doing that we need to drop all the variables that are not numeric so that we can use the variables that can be compared numerically. We are going to split the correlation plots into two plots so we can clearly see the association.
+```{r correlations}
+train$Street <- NULL # the following variables are not useful in numerical analysis
+train$LotShape <- NULL
+train$LandContour <- NULL
+train$Utilities <- NULL
+train$LotConfig <- NULL
+train$LandSlope <- NULL
+train$Neighborhood <- NULL
+train$Condition1 <- NULL
+train$Condition2 <- NULL
+train$BldgType <- NULL
+train$HouseStyle <- NULL
+train$RoofStyle <- NULL
+train$RoofMatl <- NULL
+
+train$Exterior1st <- NULL
+train$Exterior2nd <- NULL
+train$MasVnrType <- NULL
+train$ExterQual <- NULL
+train$ExterCond <- NULL
+
+train$Foundation <- NULL
+train$BsmtQual <- NULL
+train$BsmtCond <- NULL
+train$BsmtExposure <- NULL
+train$BsmtFinType1 <- NULL
+train$BsmtFinType2 <- NULL
+
+train$Heating <- NULL
+train$HeatingQC <- NULL
+train$CentralAir <- NULL
+train$Electrical <- NULL
+train$KitchenQual <- NULL
+train$FireplaceQu <- NULL
+
+train$GarageType <- NULL
+train$GarageFinish <- NULL
+train$GarageQual <- NULL
+train$GarageCond <- NULL
+train$PavedDrive <- NULL
+
+train$Functional <- NULL
+train$PoolQC <- NULL
+train$Fence <- NULL
+train$MiscFeature <- NULL
+train$SaleType <- NULL
+train$SaleCondition <- NULL
+train$MSZoning <- NULL
+train$Alley <- NULL
+correlations <- cor(train[,c(5,6,7,8, 16:25)], use="everything") # first correlation plot
+corrplot(correlations, method="circle", type="lower",  sig.level = 0.01, insig = "blank")
+
+correlations <- cor(train[,c(5,6,7,8, 26:35)], use="everything") # second correlation plot 
+corrplot(correlations, method="circle", type="lower",  sig.level = 0.01, insig = "blank")
+```
+
+According to our corrplot, the year a house was built, the amount of garage space and bathrooms was positively correlated to its overall condition, which also contributed to higher sales prices. The rest of the correlations are fairly self - explanatory. 
+
+Next we will draw some scatter plots in the form of a matrix to determine the relationship between some of the variables with the strongest correlations. The purpose of putting it in a matrix is so that we can see in a glance how the most important variables are related.
+```{r}
+pairs(~YearBuilt+OverallQual+TotalBsmtSF+GrLivArea,data=train,
+   main="Simple Scatterplot Matrix") # creating a matrix of scatter plots for associated variables
+```
+
+From this we can see that as the years pass by, the total basement square footage has become larger, alongside the size of living areas. It is interesting to see the more square footage is commonly associated with it having better overall quality.
+
+Lets looks at the relation between sales price and the year houses were built/sold. 
+
+```{r}
+par(mfrow=c(1, 2))
+# Box plot of Sales Price Against Year Built
+boxplot(SalePrice~YearBuilt,data=train,main="Sales Price Against Year Built", xlab="Year Built",ylab="SalePrice",col="orange",border="brown")
+
+# Box plot of Sales Price Against Year Sold
+boxplot(SalePrice~YrSold,data=train,main="Sales Price Against Year Sold", xlab="Year Sold",ylab="SalePrice",col="orange",border="brown")
+```
+
+We can see in the box plot "Sales Price Against Year Built" that as time has gone by, the price of new houses built has gone up drastically. Of course this increase is because we are putting sales price against the year built data set, which includes older houses. 
+
+In comparison the sales price against years sold shows data only from 2006-2010, so we can see that the sales price has not changed much in these years. But it is interesting to see how different sales prices are now compared to houses built decades ago.
+
+# 2. Checking for outliers in Dependant variable (Sales Price) using boxplot
+Choosing to compare sales price against lot area, as it appears to have a strong correlation. 
+```{r, warning=FALSE}
+ggplot(data=train)+geom_boxplot(aes(x=LotArea,y=SalePrice))
+```
+
+As we can see there is a large number of outliers. We cannot remove these data points as they could be necessary in creating an accurate prediction model.
+
+In order to see how relevant they are, we must compare the fit of a sample linear regression model on the data set with and without outliers. 
+
+First we will extract outliers from the data and then obtain the data without the outliers. 
+```{r}
+outliers=boxplot(train$SalePrice,plot=FALSE)$out # checking for outliers in Train data set for Sale Price
+outliers_data=train[which(train$SalePrice %in% outliers),] 
+train_data= train[-which(train$SalePrice %in% outliers),]
+outliers
+```
+
+We can see there are 61 observations as outliers (which is not that high). Now we can plot the data with and without outliers. 
+
+```{r}
+par(mfrow=c(1, 2))
+# Plot of original data with outliers.
+plot(train$LotArea, train$SalePrice, main="With Outliers", xlab="LotArea", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~ LotArea, data=train_data), col="blue", lwd=3, lty=2)
+
+# Plot of original data without outliers. We can clearly see a change in slope.
+plot(train_data$LotArea, train_data$SalePrice, main="Outliers removed", xlab="LotArea", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~ LotArea, data=train_data), col="blue", lwd=3, lty=2)
+```
+
+As we can see above, there is a drastic change in the slope of the best fit line after removing the outliers. There are only 61 outliers, which is quite low looking at the overall data, but those 61 outliers do have a major impact on the model. 
+
+Clearly, if we remove the outliers to build our model, our predictions will be exaggerated (high margin of error) for the higher sales price because of the steeper slope.
+
+Now we are ready to build our model. 
+
+# MODELING 
+## 1. Modeling on the entire train data 
+
+A linear model using all the variables given in the data set.
+
+```{r}
+
+outcome <- train$SalePrice # first we must partition data to fit model
+
+partition <- createDataPartition(y=outcome,
+                                 p=.5,
+                                 list=F)
+training <- train[partition,] # partitioning into two sets to create models 
+testing <- train[-partition,]
+
+
+lm_model_1 <- lm(SalePrice ~ ., data=training) # generating linear model with all variables
+summary(lm_model_1)
+```
+
+We can see above that there is an adjusted R-squared value of 0.7567, which is quite high and good for our model, as it indicates approximately 75% of the variation in the outcome is explained using our model.
+
+## 2. Now we detect the influential points of the data
+
+We now must determine the most important observations in our data set. 
+First we determine the cook's distance.
+```{r}
+cooksd <- cooks.distance(lm_model_1)
+mean(cooksd)
+```
+
+Now we plot the cook's distance.
+```{r}
+par(mfrow=c(1, 1))
+plot(cooksd, main="Influential Obs by Cooks distance",xlim=c(0,25000),ylim=c(0,0.1))
+axis(1, at=seq(0, 25000, 5000))
+axis(2, at=seq(0, 0.1, 0.0001))
+abline(h = 4*mean(cooksd, na.rm=T), col="green") # line showing where outliers are past relevant data
+text(x=1:length(cooksd)+1,y=cooksd,labels=ifelse(cooksd>4*mean(cooksd,na.rm=T),names(cooksd),""), col="red") 
+```
+
+Now to find out the influential points in the data.
+```{r}
+influential <- as.numeric(names(cooksd)[(cooksd > 4*mean(cooksd, na.rm=T))])  # influential row numbers
+head(train[influential, ])
+influential_data=train[influential, ]
+```
+
+Now we take out the influential outliers.
+```{r}
+influencial_outliers=inner_join(outliers_data,influential_data)
+```
+
+Now we modify the data excluding the outliers and including only the influential outliers.
+```{r}
+train_data1=rbind(train_data,influencial_outliers)
+```
+
+## 3. Modelling using Train data which includes influential outliers 
+To create a better model, we will use the modified data which includes influential outliers. We will also try dropping certain variables to see if we can have a better R-squared value.
+```{r}
+ln_model_2=lm(SalePrice ~ MSSubClass+LotArea+BsmtUnfSF+
+                    X1stFlrSF+X2ndFlrSF+GarageCars+
+                    WoodDeckSF, data=training ) # select variables and adjusted data
+summary(ln_model_2)
+```
+
+As we can see in this new model, the adjusted R-squared value of 0.7184 shows that the relationship between the variables shown above to be well interconnected. 
+ 
+As we can see, the R-squared value has not changed too much from the first linear model to the second, showing an equally strong relationship with all the variables. This also means that we did not drop any important variables that would drastically change the results of the model. 
+
+## Prediction and Accuracy of TRAIN DATA
+Now based off our third linear model (ln_model_2) we are ready to predict values and see the accuracy of it. As a reminder we are hoping to achieve an accuracy over 70%.
+
+```{r}
+prediction <- predict(ln_model_2, testing, type="response")
+model_output <- cbind(testing, prediction)
+
+model_output$log_prediction <- log(model_output$prediction)
+model_output$log_SalePrice <- log(model_output$SalePrice)
+
+percentage <- rmse(model_output$log_SalePrice,model_output$log_prediction) # using RMSE to calculate accuracy
+accuracy_test = 1-percentage
+accuracy_test
+```
+
+We see that the accuracy of the model is approximately 76%.
+
+Thus our model can predict price with an accuracy of approximately 76%.
+
+
